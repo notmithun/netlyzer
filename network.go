@@ -5,6 +5,7 @@ import (
 	"net"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 type NetworkInfo struct {
@@ -14,6 +15,7 @@ type NetworkInfo struct {
 	Gateway   string
 	DNS       []string
 	Online    bool
+	Latency   float64
 }
 
 func GetNetworkInfo() NetworkInfo {
@@ -46,26 +48,43 @@ func GetNetworkInfo() NetworkInfo {
 			continue
 		}
 
+		foundInterface := false
+
 		for _, addr := range addrs {
 			ip, _, err := net.ParseCIDR(addr.String())
 			if err != nil {
 				continue
 			}
 
-			if ip.String() != interfaceIP {
+			if ip.To4() != nil && ip.String() == interfaceIP {
+				info.Interface = iface.Name
+				info.IPv4 = ip.String()
+				foundInterface = true
+				break
+			}
+		}
+
+		if !foundInterface {
+			continue
+		}
+		for _, addr := range addrs {
+			ip, _, err := net.ParseCIDR(addr.String())
+			if err != nil {
 				continue
 			}
 
 			if ip.To4() == nil {
-				continue
+				info.IPv6 = ip.String()
+				break
 			}
-
-			info.Interface = iface.Name
-			info.IPv4 = ip.String()
-			info.Online = true
-
-			return info
 		}
+
+		info.DNS = GetDNS(iface.Name)
+		temp_online, temp_lat := CheckOnline()
+		info.Online = temp_online
+		info.Latency = temp_lat
+
+		return info
 	}
 
 	return info
@@ -91,10 +110,107 @@ func GetDefaultGatewayAndInterfaceIP() (string, string) {
 	return "", ""
 }
 
+func GetDNS(interfaceName string) []string {
+	var dns []string
+
+	cmd := exec.Command("ipconfig", "/all")
+
+	output, err := cmd.Output()
+	if err != nil {
+		return dns
+	}
+
+	lines := strings.Split(string(output), "\n")
+
+	inTargetInterface := false
+
+	for _, rawLine := range lines {
+		line := strings.TrimSpace(rawLine)
+
+		if !strings.HasPrefix(rawLine, " ") &&
+			strings.HasSuffix(line, ":") {
+			inTargetInterface = strings.Contains(line, interfaceName+":")
+			continue
+		}
+
+		if !inTargetInterface {
+			continue
+		}
+
+		if strings.HasPrefix(line, "DNS Servers") {
+			parts := strings.SplitN(line, ":", 2)
+
+			if len(parts) != 2 {
+				continue
+			}
+
+			server := strings.TrimSpace(parts[1])
+
+			if server != "" {
+				dns = append(dns, server)
+			}
+		}
+	}
+
+	return dns
+}
+
+func CheckOnline() (bool, float64) {
+	start := time.Now()
+	conn, error := net.DialTimeout(
+		"tcp",
+		"8.8.8.8:53",
+		2*time.Second,
+	)
+
+	if error != nil {
+		return false, -1
+	}
+
+	conn.Close()
+	latency := float64(time.Since(start).Microseconds()) / 1000
+
+	return true, latency
+}
+
 func (n NetworkInfo) Display() {
-	fmt.Println(n)
-	fmt.Println("Interface:", n.Interface)
-	fmt.Println("IPv4:", n.IPv4)
-	fmt.Println("IPv6:", n.IPv6)
-	fmt.Println("Gateway:", n.Gateway)
+	fmt.Println()
+	fmt.Println("╭──────────────────────────────────────────────╮")
+	fmt.Println("│                 NETLYZER                     │")
+	fmt.Println("╰──────────────────────────────────────────────╯")
+
+	fmt.Println()
+	fmt.Println("╭─ Network ────────────────────────────────────╮")
+	fmt.Printf("│ Interface : %-32s │\n", n.Interface)
+	fmt.Printf("│ IPv4      : %-32s │\n", n.IPv4)
+	fmt.Printf("│ IPv6      : %-32s │\n", n.IPv6)
+	fmt.Printf("│ Gateway   : %-32s │\n", n.Gateway)
+
+	dns := "None"
+	if len(n.DNS) > 0 {
+		dns = strings.Join(n.DNS, ", ")
+	}
+
+	fmt.Printf("│ DNS       : %-32s │\n", dns)
+
+	status := "OFFLINE"
+	if n.Online {
+		status = "ONLINE"
+	}
+
+	fmt.Printf("│ Status    : %-32s │\n", status)
+
+	fmt.Println("╰──────────────────────────────────────────────╯")
+
+	fmt.Println()
+	fmt.Println("╭─ Connection ─────────────────────────────────╮")
+
+	if n.Latency >= 0 {
+		fmt.Printf("│ Latency   : %-35s│\n", fmt.Sprintf("%.2f ms", n.Latency))
+	} else {
+		fmt.Printf("│ Latency   : %-32s │\n", "N/A")
+	}
+
+	fmt.Println("╰──────────────────────────────────────────────╯")
+	fmt.Println()
 }

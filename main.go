@@ -5,7 +5,7 @@ import (
 )
 
 func main() {
-	fmt.Println("Version: vDev 1")
+	fmt.Println("V1")
 	network := GetNetworkInfo()
 
 	network.Display()
